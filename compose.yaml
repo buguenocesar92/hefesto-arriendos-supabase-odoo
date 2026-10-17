@@ -1,0 +1,21 @@
+services:
+  taller:
+    build:
+      context: .
+      dockerfile: portable/Dockerfile
+    restart: unless-stopped
+    environment:
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Define ADMIN_PASSWORD en .env}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Define PUBLIC_ORIGIN en .env}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      DATA_DIR: /data
+    ports:
+      - "127.0.0.1:3080:3000"
+    volumes:
+      - taller-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+volumes:
+  taller-data:

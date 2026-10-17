@@ -1,0 +1,10 @@
+import { getChatGPTUser } from '../../chatgpt-auth';
+import { getDb } from '../../../db';
+import { workshops } from '../../../db/schema';
+import { and, eq } from 'drizzle-orm';
+import { seed,mutate,normalize } from '../../../lib/domain';
+export const dynamic='force-dynamic';
+const json=(data:any,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store'}});
+async function read(owner:string){const db=getDb();let [row]=await db.select().from(workshops).where(eq(workshops.owner,owner));if(!row){await db.insert(workshops).values({owner,data:JSON.stringify(seed()),revision:0}).onConflictDoNothing();[row]=await db.select().from(workshops).where(eq(workshops.owner,owner));}return row;}
+export async function GET(){const user=await getChatGPTUser();if(!user)return json({error:'Inicia sesión para acceder'},401);try{const row=await read(user.userId);return json({state:normalize(JSON.parse(row.data)),revision:row.revision});}catch{return json({error:'No se pudo cargar el arriendos. Intenta nuevamente.'},500)}}
+export async function POST(req:Request){const user=await getChatGPTUser();if(!user)return json({error:'Acceso no autorizado'},401);if(req.headers.get('origin')&&req.headers.get('origin')!==new URL(req.url).origin)return json({error:'Origen no permitido'},403);try{const raw=await req.text();if(raw.length>500000)return json({error:'Solicitud demasiado grande'},413);const body=JSON.parse(raw);const row=await read(user.userId);if(body.revision!==row.revision)return json({error:'Hay cambios recientes. Recarga antes de continuar.'},409);const s=mutate(JSON.parse(row.data),body.action,user.email);const updated=await getDb().update(workshops).set({data:JSON.stringify(s),revision:row.revision+1}).where(and(eq(workshops.owner,user.userId),eq(workshops.revision,row.revision))).returning({revision:workshops.revision});if(!updated.length)return json({error:'Otro cambio se guardó primero. Recarga y vuelve a intentar.'},409);return json({state:s,revision:row.revision+1});}catch(e){return json({error:e instanceof Error?e.message:'No se pudo guardar'},400)}}

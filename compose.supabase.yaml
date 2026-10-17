@@ -1,0 +1,20 @@
+services:
+  taller:
+    build:
+      context: .
+      dockerfile: portable/Dockerfile
+    restart: unless-stopped
+    environment:
+      STORAGE_BACKEND: supabase
+      SUPABASE_URL: ${SUPABASE_URL:?Define SUPABASE_URL}
+      SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:?Define SUPABASE_SECRET_KEY}
+      WORKSHOP_ID: ${WORKSHOP_ID:-main}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Define ADMIN_PASSWORD}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Define PUBLIC_ORIGIN}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+    ports:
+      - "127.0.0.1:3080:3000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
