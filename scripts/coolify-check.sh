@@ -175,16 +175,21 @@ for entry in "${apps[@]}"; do
     cat "${tmp_root}/render-names.err" >&2
     failures=$((failures + 1))
   else
+    # Separar los dos chequeos con paréntesis: si no, jq los encadena dentro del
+    # bucle de redes (los volúmenes se repiten por cada red mala y, si las redes
+    # están bien, los volúmenes ni siquiera se revisan). Cada bloque es ahora
+    # independiente.
     name_query='
-      (.networks // {} | to_entries[]) as $n
-      | select($n.value.external != true)
-      | select($n.value.name != "coolifycheck_\($n.key)")
-      | "red:\($n.key): name fijo (\($n.value.name))"
-      ,
-      (.volumes // {} | to_entries[]) as $v
-      | select($v.value.external != true)
-      | select($v.value.name != "coolifycheck_\($v.key)")
-      | "volumen:\($v.key): name fijo (\($v.value.name))"
+      (
+        (.networks // {} | to_entries[]
+          | select(.value.external != true)
+          | select(.value.name != "coolifycheck_\(.key)")
+          | "red:\(.key): name fijo (\(.value.name))"),
+        (.volumes // {} | to_entries[]
+          | select(.value.external != true)
+          | select(.value.name != "coolifycheck_\(.key)")
+          | "volumen:\(.key): name fijo (\(.value.name))")
+      )
     '
     bad_names="$(jq -r "${name_query}" "${rendered_names}")"
     if [[ -n "${bad_names}" ]]; then
