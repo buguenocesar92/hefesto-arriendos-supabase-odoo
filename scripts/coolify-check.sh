@@ -93,10 +93,16 @@ for entry in "${apps[@]}"; do
     continue
   fi
 
+  # Contrato punto 2: nada de 'name:' fijo a nivel raíz del compose.
+  if grep -qE '^name:' "${compose_path}"; then
+    echo "${compose_file}: name fijo en raíz" >&2
+    failures=$((failures + 1))
+  fi
+
   jq_query='
     .services // {}
     | to_entries[]
-    | select((.value.profiles // []) | index("default") | not)
+    | select((.value.profiles // []) | length == 0)
     | . as $entry
     | [
         (if ($entry.value.ports // [] | length) > 0 then "ports" else empty end),
@@ -109,7 +115,7 @@ for entry in "${apps[@]}"; do
         (if ($entry.value.ipc // null) == "host" then "ipc=host" else empty end),
         (
           ($entry.value.security_opt // [])
-          | map(select(. == "unconfined" or . == "seccomp:unconfined" or . == "apparmor:unconfined"))
+          | map(select(test("unconfined")))
           | if length > 0 then "security_opt=unconfined" else empty end
         )
       ]
@@ -117,7 +123,9 @@ for entry in "${apps[@]}"; do
     | "\($entry.key):\(.)"
   '
 
-  bad="$(jq -r "${jq_query}" "${rendered}" 2>/dev/null || true)"
+  # Si jq falla por sintaxis o por forma inesperada, set -euo pipefail lo propaga
+  # como exit 2; no se traga con || true para no aprobar cuando debería fallar.
+  bad="$(jq -r "${jq_query}" "${rendered}")"
   if [[ -n "${bad}" ]]; then
     while IFS= read -r line; do
       echo "${compose_file}: ${line}" >&2
@@ -125,26 +133,66 @@ for entry in "${apps[@]}"; do
     done <<< "${bad}"
   fi
 
-  # Bind mounts fuera del repo o que monten docker.sock.
+  # Bind mounts fuera del repo o que monten docker.sock. Se compara la raíz del
+  # bind contra el project_root del repo: fuera del repo o que mencione
+  # docker.sock se considera peligroso.
   bind_query='
     [
       .services // {}
       | to_entries[]
-      | select((.value.profiles // []) | index("default") | not)
+      | select((.value.profiles // []) | length == 0)
       | .value.volumes // []
       | to_entries[]
       | select(.value.type == "bind")
       | .value.source
     ]
-    | map(select(test("/\\.docker/") or test("docker\\.sock$")))
+    | map(select(
+        ( ((. == $root) or startswith($root + "/")) | not )
+        or test("docker\\.sock")
+      ))
     | .[]
   '
-  bad_binds="$(jq -r "${bind_query}" "${rendered}" 2>/dev/null || true)"
+  bad_binds="$(jq --arg root "${project_root}" -r "${bind_query}" "${rendered}")"
   if [[ -n "${bad_binds}" ]]; then
     while IFS= read -r source; do
       echo "${compose_file}: bind fuera del repo o expone docker.sock: ${source}" >&2
       failures=$((failures + 1))
     done <<< "${bad_binds}"
+  fi
+
+  # Contrato punto 2 (continuación): redes y volúmenes no pueden tener 'name:'
+  # fijo. Coolify pone el nombre del proyecto al desplegar; si el compose lo
+  # fija, choca con el despliegue. Se re-renderiza con --project-name
+  # coolifycheck para que compose ponga sufijo predecible y poder comparar.
+  rendered_names="${tmp_root}/render-names.${compose_file//\//_}.json"
+  if ! docker compose \
+      --project-name coolifycheck \
+      --project-directory "${abs_base_dir}" \
+      -f "${compose_path}" \
+      --env-file "${env_file}" \
+      config --format json > "${rendered_names}" 2> "${tmp_root}/render-names.err"; then
+    echo "${compose_file}: docker compose config (re-render) falló:" >&2
+    cat "${tmp_root}/render-names.err" >&2
+    failures=$((failures + 1))
+  else
+    name_query='
+      (.networks // {} | to_entries[]) as $n
+      | select($n.value.external != true)
+      | select($n.value.name != "coolifycheck_\($n.key)")
+      | "red:\($n.key): name fijo (\($n.value.name))"
+      ,
+      (.volumes // {} | to_entries[]) as $v
+      | select($v.value.external != true)
+      | select($v.value.name != "coolifycheck_\($v.key)")
+      | "volumen:\($v.key): name fijo (\($v.value.name))"
+    '
+    bad_names="$(jq -r "${name_query}" "${rendered_names}")"
+    if [[ -n "${bad_names}" ]]; then
+      while IFS= read -r line; do
+        echo "${compose_file}: ${line}" >&2
+        failures=$((failures + 1))
+      done <<< "${bad_names}"
+    fi
   fi
 
   # Para supabase-pg: DB_NAME=mvp_prueba y DB_SSLMODE=disable deben aparecer
